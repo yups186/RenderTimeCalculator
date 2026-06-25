@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Render Time Calculator</title>
+
+<style>
+    body {
+        font-family: Arial, Helvetica, sans-serif;
+        background: #e9e9e9;
+        margin: 0;
+        padding: 30px;
+        color: #222;
+    }
+    .container { max-width: 900px; margin: auto; }
+    .card {
+        background: white;
+        padding: 20px;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+    }
+    h2 { margin-top: 0; color: #333; }
+    .row {
+        display: flex;
+        gap: 15px;
+        flex-wrap: wrap;
+        margin-bottom: 15px;
+    }
+    .field { flex: 1; min-width: 140px; }
+    label {
+        display: block;
+        margin-bottom: 5px;
+        font-size: 13px;
+        font-weight: bold;
+        color: #555;
+    }
+    input, select {
+        padding: 10px;
+        font-size: 14px;
+        border: 1px solid #bbb;
+        border-radius: 6px;
+        width: 100%;
+        box-sizing: border-box;
+    }
+    button {
+        padding: 10px 16px;
+        border: none;
+        background: #2d6cdf;
+        color: white;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: bold;
+        transition: background 0.2s;
+    }
+    button:hover { background: #1f56b8; }
+    .btn-danger { background: #e74c3c; margin-top: 5px; }
+    .btn-danger:hover { background: #c0392b; }
+    .btn-balance { background: #8e44ad; width: 100%; }
+    .btn-balance:hover { background: #732d91; }
+    
+    .node {
+        border: 1px solid #ddd;
+        padding: 15px;
+        border-radius: 8px;
+        margin-top: 15px;
+        background: #fafafa;
+        position: relative;
+    }
+    .result {
+        margin-top: 15px;
+        padding: 15px;
+        background: #f3f3f3;
+        border-left: 4px solid #2d6cdf;
+        border-radius: 4px;
+        font-weight: bold;
+    }
+    .farm-result {
+        border-left: 4px solid #27ae60;
+    }
+    .farm-controls {
+        background: #f0f4f8; 
+        padding: 15px 15px 0 15px; 
+        border-radius: 8px; 
+        border: 1px solid #d9e2ec; 
+        margin-bottom: 20px;
+    }
+</style>
+</head>
+<body>
+
+<div class="container">
+    <div class="card">
+        <h2>Reference Machine (RTX 3060)</h2>
+        <p style="font-size: 13px; color: #666; margin-top: -10px;">Use this strictly to set your baseline frame time. This machine is NOT added to the farm calculation below.</p>
+        <div class="row">
+            <div class="field">
+                <label>Frame Time (min)</label>
+                <input id="refTime" type="number" step="0.1" value="11" oninput="updateRef(); syncAllNodes();">
+            </div>
+            <div class="field">
+                <label>Total Frames</label>
+                <input id="refFrames" type="number" value="240" oninput="updateRef()">
+            </div>
+        </div>
+        <div class="result" id="refResult">Reference Total: 1d 20h 0m</div>
+    </div>
+
+    <div class="card">
+        <h2>Render Farm Allocation</h2>
+        
+        <div class="farm-controls">
+            <div class="row">
+                <div class="field">
+                    <label style="color: #243b53;">Total Job Frames</label>
+                    <input id="farmTotalFrames" type="number" value="240" oninput="balanceFarm()">
+                </div>
+                <div class="field" style="display: flex; align-items: flex-end;">
+                    <button class="btn-balance" onclick="balanceFarm()">⚖️ Auto-Balance Workload</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="nodes"></div>
+        <br>
+        <button onclick="addNode()">+ Add Node</button>
+        <div style="clear: both;"></div>
+        <div class="result farm-result" id="farmResult">Awaiting calculation...</div>
+    </div>
+</div>
+
+<script>
+// Benchmark data (RTX 3060 = baseline GPU)
+const gpus = {
+    "RTX 3060": 2302,
+    "RTX 4070": 6000,
+    "RTX 4080 SUPER": 8428,
+    "RTX 4090": 11688,
+    "RTX 5090": 15014
+};
+
+function getGpuSpeed(gpu) {
+    return gpus[gpu] / gpus["RTX 3060"];
+}
+
+function formatTime(mins) {
+    if (isNaN(mins) || mins < 0) return "0m";
+    let m = Math.round(mins);
+    let d = Math.floor(m / 1440);
+    m %= 1440;
+    let h = Math.floor(m / 60);
+    m %= 60;
+    return `${d > 0 ? d + 'd ' : ''}${h > 0 ? h + 'h ' : ''}${m}m`;
+}
+
+function updateRef() {
+    const tTime = parseFloat(document.getElementById("refTime").value) || 0;
+    const tFrames = parseFloat(document.getElementById("refFrames").value) || 0;
+    document.getElementById("refResult").innerHTML = "Reference Machine Total: " + formatTime(tTime * tFrames);
+}
+
+function addNode() {
+    let div = document.createElement("div");
+    div.className = "node";
+    
+    let options = Object.keys(gpus).reverse().map(g => `<option value="${g}">${g}</option>`).join('');
+
+    div.innerHTML = `
+        <div class="row">
+            <div class="field">
+                <label>GPU (Auto-scales Frame Time)</label>
+                <select class="gpu" onchange="autoScaleNode(this.closest('.node')); balanceFarm();">${options}</select>
+            </div>
+            <div class="field">
+                <label>Price per hour ($)</label>
+                <input class="price" type="number" step="0.05" value="0.30" oninput="calculateFarmTotals()">
+            </div>
+        </div>
+        <div class="row">
+            <div class="field">
+                <label>Node Frame Time (min)</label>
+                <input class="node-time" type="number" step="0.1" value="0" oninput="calculateFarmTotals()">
+            </div>
+            <div class="field">
+                <label>Frames to Render</label>
+                <input class="node-frames" type="number" value="0" oninput="calculateFarmTotals()">
+            </div>
+        </div>
+        <button class="btn-danger" onclick="this.parentElement.remove(); calculateFarmTotals();">Remove Node</button>
+    `;
+    
+    document.getElementById("nodes").appendChild(div);
+    
+  
+    autoScaleNode(div);
+    balanceFarm();
+}
+
+function autoScaleNode(nodeElement) {
+    let gpu = nodeElement.querySelector(".gpu").value;
+    let refTime = parseFloat(document.getElementById("refTime").value) || 0;
+    
+    let speedMult = getGpuSpeed(gpu);
+    let calculatedTime = refTime / speedMult;
+    
+    nodeElement.querySelector(".node-time").value = calculatedTime.toFixed(2);
+}
+
+function syncAllNodes() {
+    let nodeEls = document.querySelectorAll(".node");
+    nodeEls.forEach(n => autoScaleNode(n));
+    balanceFarm();
+}
+
+function balanceFarm() {
+    let totalFrames = parseFloat(document.getElementById("farmTotalFrames").value) || 0;
+    let nodeEls = document.querySelectorAll(".node");
+    
+    if (nodeEls.length === 0) return;
+
+    // calculate power of all GPU's
+    let totalSpeedFPM = 0;
+    nodeEls.forEach(n => {
+        let timePerFrame = parseFloat(n.querySelector(".node-time").value) || 0;
+        if (timePerFrame > 0) {
+            totalSpeedFPM += (1 / timePerFrame);
+        }
+    });
+
+    if (totalSpeedFPM === 0) return;
+
+    // Distribute frames proportionally based on each node's speed
+    nodeEls.forEach(n => {
+        let timePerFrame = parseFloat(n.querySelector(".node-time").value) || 0;
+        if (timePerFrame > 0) {
+            let nodeFPM = 1 / timePerFrame;
+            let share = nodeFPM / totalSpeedFPM;
+            n.querySelector(".node-frames").value = Math.round(totalFrames * share);
+        } else {
+            n.querySelector(".node-frames").value = 0;
+        }
+    });
+
+    calculateFarmTotals();
+}
+
+function calculateFarmTotals() {
+    const nodeEls = document.querySelectorAll(".node");
+    
+    if (nodeEls.length === 0) {
+        document.getElementById("farmResult").innerHTML = "Add nodes to calculate farm delivery time and cost.";
+        return;
+    }
+
+    let slowestNodeTime = 0;
+    let totalCost = 0;
+
+    nodeEls.forEach(n => {
+        let frameTime = parseFloat(n.querySelector(".node-time").value) || 0;
+        let frames = parseFloat(n.querySelector(".node-frames").value) || 0;
+        let price = parseFloat(n.querySelector(".price").value) || 0;
+
+        let nodeTotalTime = frames * frameTime;
+        
+        slowestNodeTime = Math.max(slowestNodeTime, nodeTotalTime);
+        totalCost += (nodeTotalTime / 60) * price;
+    });
+
+    document.getElementById("farmResult").innerHTML = `
+        <strong>Farm Delivery Time:</strong> ${formatTime(slowestNodeTime)}<br>
+        <strong>Total Farm Cost:</strong> $${totalCost.toFixed(2)}
+    `;
+}
+
+// run initial setup
+updateRef();
+addNode();
+
+</script>
+</body>
+</html>
